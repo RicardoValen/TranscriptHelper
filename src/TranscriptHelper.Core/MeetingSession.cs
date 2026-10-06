@@ -2,6 +2,7 @@ namespace TranscriptHelper.Core;
 
 using TranscriptHelper.Core.Meeting;
 using TranscriptHelper.Core.Models;
+using TranscriptHelper.Core.Speaker;
 
 public sealed record TranscriptEntry(Guid Id, DateTimeOffset Timestamp, string Speaker, string Text);
 public sealed record MeetingSnapshot(Guid Id, string Title, bool IsEnabled, IReadOnlyList<TranscriptEntry> Entries);
@@ -14,11 +15,12 @@ public interface IMeetingAssistant
     Task<AssistantAnswer> AskAsync(MeetingSnapshot meeting, string question, CancellationToken cancellationToken = default);
 }
 
-public sealed class MeetingSession(string title)
+public sealed class MeetingSession(string title, ISpeakerDiarizer? diarizer = null)
 {
     private readonly object gate = new();
     private MeetingContext? context;
     private readonly Dictionary<string, string> speakerToParticipantId = [];
+    private readonly ISpeakerDiarizer diarizer = diarizer ?? new NullSpeakerDiarizer();
     public Guid Id { get; } = Guid.NewGuid();
     public string Title { get; } = string.IsNullOrWhiteSpace(title) ? "Untitled meeting" : title.Trim();
     private bool enabled;
@@ -41,12 +43,14 @@ public sealed class MeetingSession(string title)
             {
                 participantId = Guid.NewGuid().ToString();
                 speakerToParticipantId[speaker] = participantId;
-                context.Participants.Add(new Participant(
+                var participant = new Participant(
                     participantId, 
                     speaker, 
                     speaker == "You", 
                     DateTimeOffset.UtcNow, 
-                    DateTimeOffset.UtcNow));
+                    DateTimeOffset.UtcNow);
+                context.Participants.Add(participant);
+                diarizer.OnParticipantChanged(participant, added: true);
             }
             
             // Create segment and add to context
@@ -88,6 +92,17 @@ public sealed class MeetingSession(string title)
     {
         lock (gate) return context;
     }
+}
+
+/// <summary>
+/// Null implementation of diarizer that just passes through speaker names.
+/// Used as default; can be replaced with real diarization at runtime.
+/// </summary>
+internal sealed class NullSpeakerDiarizer : ISpeakerDiarizer
+{
+    public void OnParticipantChanged(Participant participant, bool added) { }
+    public Task<string?> IdentifySpeakerAsync(float[] audioSamples, IReadOnlyList<Participant> knownParticipants, CancellationToken ct = default) 
+        => Task.FromResult<string?>(null);
 }
 
 // Explicit markers make the demo predictable; this is not natural-language inference.

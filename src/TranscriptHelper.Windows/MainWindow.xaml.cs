@@ -7,17 +7,20 @@ using System.Windows.Media;
 using Microsoft.Win32;
 using TranscriptHelper.Audio;
 using TranscriptHelper.Core;
+using TranscriptHelper.Core.Speaker;
+using TranscriptHelper.Core.Insights;
 
 namespace TranscriptHelper.Windows;
 public partial class MainWindow : Window
 {
-    private readonly MeetingSession meeting = new("Desktop demo");
+    private readonly MeetingSession meeting = new("Desktop demo", diarizer: new SimpleVolumeDiarizer());
     private AudioSession? capture;
     private bool busy;
     private bool closing;
     private double expandedHeight = 410;
     private bool settingsOpen;
-    private readonly IMeetingAssistant assistant = new DemoMeetingAssistant();
+    private IMeetingAssistant assistant;
+    private ProactiveInsightService? insightService;
     private bool recapView;
     private string TranscriptText() => string.Join(Environment.NewLine, meeting.Snapshot().Entries.Select(x => $"[{x.Timestamp.ToLocalTime():HH:mm:ss}] {x.Speaker}: {x.Text}"));
      
@@ -89,6 +92,27 @@ public partial class MainWindow : Window
         InitializeComponent();
         Key.Password = Environment.GetEnvironmentVariable("AZURE_SPEECH_KEY") ?? "";
         Region.Text = Environment.GetEnvironmentVariable("AZURE_SPEECH_REGION") ?? "";
+         
+        // Initialize AI assistant (OpenAI if API key provided, else Demo)
+        var openAiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        assistant = !string.IsNullOrWhiteSpace(openAiKey) 
+            ? (IMeetingAssistant)new OpenAIMeetingAssistant(openAiKey)
+            : new DemoMeetingAssistant();
+         
+        // Initialize proactive insight service if meeting context exists
+        var context = meeting.GetContext();
+        if (context != null)
+        {
+            insightService = new ProactiveInsightService(assistant, context);
+            insightService.InsightDetected += (s, args) =>
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    Status.Text = $"Insight detected: {args.Insight.GetType().Name}";
+                }));
+            };
+        }
+         
         try { Output.ItemsSource = AudioSession.Outputs(); Output.SelectedIndex = 0; }
         catch (Exception ex) { Status.Text = $"Could not enumerate output devices: {ex.Message}"; }
     }
