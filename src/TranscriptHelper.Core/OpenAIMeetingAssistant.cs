@@ -1,19 +1,23 @@
+using TranscriptHelper.Core.Meeting;
+
 namespace TranscriptHelper.Core;
 
 /// <summary>
-/// Stub OpenAI implementation ready for real API integration.
+/// OpenAI implementation with token-efficient prompt building using rolling summaries.
 /// Demonstrates how to use MeetingContext for more intelligent prompting.
 /// </summary>
 public sealed class OpenAIMeetingAssistant : IMeetingAssistant
 {
     private readonly string? apiKey;
     private readonly string modelId;
+    private readonly MeetingContext? context;
 
-    public OpenAIMeetingAssistant(string? apiKey = null, string modelId = "gpt-4-turbo")
+    public OpenAIMeetingAssistant(string? apiKey = null, string modelId = "gpt-4-turbo", MeetingContext? context = null)
     {
         // For demo: use environment variable if not provided
         this.apiKey = apiKey ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY");
         this.modelId = modelId;
+        this.context = context;
     }
 
     public async Task<AssistantAnswer> AskAsync(
@@ -49,9 +53,22 @@ public sealed class OpenAIMeetingAssistant : IMeetingAssistant
         return await Task.FromResult(new AssistantAnswer(demoResponse, sourceIds));
     }
 
-    private static string BuildContextualPrompt(MeetingSnapshot meeting, string question)
+    private string BuildContextualPrompt(MeetingSnapshot meeting, string question)
     {
         var participantList = string.Join(", ", meeting.Entries.Select(e => e.Speaker).Distinct());
+        
+        // Use rolling summaries if available to reduce token usage
+        var contextSection = "";
+        if (context != null && context.SummaryHistory.Count > 0)
+        {
+            // Include latest summary for context, then recent entries for detail
+            var latestSummary = context.SummaryHistory.FirstOrDefault();
+            if (latestSummary != null)
+            {
+                contextSection += $"Meeting Summary:\n{latestSummary.SummaryText}\n\n";
+            }
+        }
+
         var recentTranscript = string.Join("\n", meeting.Entries.TakeLast(10).Select(e =>
             $"[{e.Timestamp.ToLocalTime():HH:mm:ss}] {e.Speaker}: {e.Text}"));
 
@@ -59,7 +76,7 @@ public sealed class OpenAIMeetingAssistant : IMeetingAssistant
             Meeting: {meeting.Title}
             Participants: {participantList}
             
-            Recent transcript (last 10 entries):
+            {contextSection}Recent transcript (last 10 entries):
             {recentTranscript}
             
             User question: {question}

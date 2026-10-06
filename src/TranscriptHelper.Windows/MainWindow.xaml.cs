@@ -7,6 +7,8 @@ using System.Windows.Media;
 using Microsoft.Win32;
 using TranscriptHelper.Audio;
 using TranscriptHelper.Core;
+using TranscriptHelper.Core.Meeting;
+using TranscriptHelper.Core.Services;
 using TranscriptHelper.Core.Speaker;
 using TranscriptHelper.Core.Insights;
 
@@ -21,6 +23,7 @@ public partial class MainWindow : Window
     private bool settingsOpen;
     private IMeetingAssistant assistant;
     private ProactiveInsightService? insightService;
+    private AutoSummaryGenerator? summaryGenerator;
     private bool recapView;
     private string TranscriptText() => string.Join(Environment.NewLine, meeting.Snapshot().Entries.Select(x => $"[{x.Timestamp.ToLocalTime():HH:mm:ss}] {x.Speaker}: {x.Text}"));
      
@@ -92,17 +95,22 @@ public partial class MainWindow : Window
         InitializeComponent();
         Key.Password = Environment.GetEnvironmentVariable("AZURE_SPEECH_KEY") ?? "";
         Region.Text = Environment.GetEnvironmentVariable("AZURE_SPEECH_REGION") ?? "";
-         
+        
+        // Get meeting context early for assistant initialization
+        var context = meeting.GetContext();
+        
         // Initialize AI assistant (OpenAI if API key provided, else Demo)
         var openAiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
         assistant = !string.IsNullOrWhiteSpace(openAiKey) 
-            ? (IMeetingAssistant)new OpenAIMeetingAssistant(openAiKey)
+            ? (IMeetingAssistant)new OpenAIMeetingAssistant(openAiKey, "gpt-4-turbo", context)
             : new DemoMeetingAssistant();
-         
-        // Initialize proactive insight service if meeting context exists
-        var context = meeting.GetContext();
+        
+        // Initialize auto-summary generator for token efficiency in long meetings
         if (context != null)
         {
+            summaryGenerator = new AutoSummaryGenerator(assistant, context, entriesBetweenSummary: 50);
+            
+            // Initialize proactive insight service
             insightService = new ProactiveInsightService(assistant, context);
             insightService.InsightDetected += (s, args) =>
             {
@@ -112,7 +120,7 @@ public partial class MainWindow : Window
                 }));
             };
         }
-         
+        
         try { Output.ItemsSource = AudioSession.Outputs(); Output.SelectedIndex = 0; }
         catch (Exception ex) { Status.Text = $"Could not enumerate output devices: {ex.Message}"; }
     }
@@ -127,10 +135,26 @@ public partial class MainWindow : Window
         capture.Level += (speaker, level) => Dispatcher.BeginInvoke(new Action(() =>
         { if (speaker == "You") MicLevel.Value = level; else SpeakerLevel.Value = level; }));
         capture.Error += message => Dispatcher.BeginInvoke(new Action(() => Status.Text = message));
-        capture.Transcript += (speaker, text, final) => Dispatcher.BeginInvoke(new Action(() =>
+        capture.Transcript += (speaker, text, final) => Dispatcher.BeginInvoke(new Action(async () =>
         {
             if (final && meeting.TryAppend(speaker, text, out _))
-            { if (!recapView) { Transcript.Text = TranscriptText(); Transcript.ScrollToEnd(); } Partial.Text = ""; }
+            { 
+                if (!recapView) { Transcript.Text = TranscriptText(); Transcript.ScrollToEnd(); } 
+                Partial.Text = ""; 
+                
+                // Try to generate summary for token efficiency in long meetings
+                if (summaryGenerator != null)
+                {
+                    try
+                    {
+                        await summaryGenerator.TryGenerateSummaryAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Summary generation error: {ex.Message}");
+                    }
+                }
+            }
             else if (!final) Partial.Text = $"{speaker}: {text}";
         }));
         meeting.SetEnabled(true);

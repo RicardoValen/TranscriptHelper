@@ -7,13 +7,22 @@ public sealed class MeetingContext
     private const int RecentSegmentLimit = 30;
     private readonly object gate = new();
     private readonly LinkedList<TranscriptSegment> recentTranscript = [];
+    private readonly List<RollingSummary> summaryHistory = [];
 
     public string MeetingId { get; }
     public List<Participant> Participants { get; } = [];
     public List<ActionItem> ActionItems { get; } = [];
     public List<Decision> Decisions { get; } = [];
     public List<OpenQuestion> OpenQuestions { get; } = [];
-    public string RollingSummary { get; set; } = "";
+    
+    /// <summary>Historical rolling summaries, newest first.</summary>
+    public IReadOnlyList<RollingSummary> SummaryHistory 
+    { 
+        get 
+        { 
+            lock (gate) return summaryHistory.AsReadOnly(); 
+        } 
+    }
 
     public MeetingContext(string meetingId)
     {
@@ -27,6 +36,17 @@ public sealed class MeetingContext
             recentTranscript.AddLast(segment);
             while (recentTranscript.Count > RecentSegmentLimit)
                 recentTranscript.RemoveFirst();
+        }
+    }
+
+    public void AddSummary(RollingSummary summary)
+    {
+        lock (gate)
+        {
+            summaryHistory.Insert(0, summary);  // Newest first
+            // Keep only last 10 summaries to avoid unbounded growth
+            while (summaryHistory.Count > 10)
+                summaryHistory.RemoveAt(summaryHistory.Count - 1);
         }
     }
 
@@ -45,7 +65,7 @@ public sealed class MeetingContext
                 ActionItems.AsReadOnly(),
                 Decisions.AsReadOnly(),
                 OpenQuestions.AsReadOnly(),
-                RollingSummary);
+                summaryHistory.AsReadOnly());
     }
 }
 
@@ -56,4 +76,4 @@ public sealed record MeetingContextSnapshot(
     IReadOnlyList<ActionItem> ActionItems,
     IReadOnlyList<Decision> Decisions,
     IReadOnlyList<OpenQuestion> OpenQuestions,
-    string RollingSummary);
+    IReadOnlyList<RollingSummary> SummaryHistory);
